@@ -1,0 +1,339 @@
+%% SCRIPT FINAL: 4GDL
+
+clear; clc; close all;
+
+%% 1. DEFINIÇÃO DE PARÂMETROS FÍSICOS (SÍMBOLOS)
+syms Mc Jc MG JG Mp g v K C Ktorc Ctorc b c d a xp Fm real
+
+%% 2. VARIÁVEIS DE ESTADO
+syms y Dy D2y theta Dtheta D2theta h Dh D2h phi Dphi D2phi real
+syms ud Dud ut Dut real 
+
+% Vetores
+q   = [y; theta; h; phi];
+qd  = [Dy; Dtheta; Dh; Dphi];
+qdd = [D2y; D2theta; D2h; D2phi];
+
+%% 3. MODELAGEM NÃO-LINEAR (LAGRANGE)
+
+% Cinética e Potencial:
+
+% Auxiliares:
+R_GC = [v; y]; V_C = [0; Dy];
+
+R_Pv = R_GC + [b*cos(theta) - h*sin(theta); b*sin(theta) + h*cos(theta)];
+R_GF = R_Pv + [a*cos(theta+phi); a*sin(theta+phi)];
+V_F  = jacobian(R_GF, q)*qd; V_F(1) = V_F(1) + v; 
+
+R_GP = R_Pv + [xp*cos(theta+phi); xp*sin(theta+phi)];
+V_P  = jacobian(R_GP, q)*qd; V_P(1) = V_P(1) + v; 
+
+% Energias
+T_C = 0.5*Mc*(V_C.'*V_C + v^2) + 0.5*Jc*Dtheta^2;
+T_G = 0.5*MG*(V_F.'*V_F) + 0.5*JG*(Dtheta+Dphi)^2;
+T_P = 0.5*Mp*(V_P.'*V_P);
+
+Y_diant = y + c*sin(theta); Y_tras  = y - d*sin(theta);
+U_C = Mc*g*y + K*Y_diant^2 + K*Y_tras^2;
+U_G = MG*g*R_GF(2) + 0.5*Ktorc*phi^2;
+U_P = Mp*g*R_GP(2);
+
+L = (T_C + T_G + T_P) - (U_C + U_G + U_P);
+
+% Forças Generalizadas:
+V_diant = jacobian(Y_diant, q)*qd; 
+V_tras  = jacobian(Y_tras, q)*qd;
+
+Q_y = -2*C*V_diant - 2*C*V_tras + 2*K*(ud+ut) + 2*C*(Dud+Dut);
+Q_theta = (-2*C*V_diant)*(c*cos(theta)) + (-2*C*V_tras)*(-d*cos(theta)) ...
+          + (2*K*ud+2*C*Dud)*c - (2*K*ut+2*C*Dut)*d;
+Q_h = Fm; 
+Q_phi = -Ctorc*Dphi;
+
+Q = [Q_y; Q_theta; Q_h; Q_phi];
+
+% Lagrangeana:
+dLdqd = jacobian(L, qd).'; 
+dLdq  = jacobian(L, q).';
+EOM = (jacobian(dLdqd, q)*qd + jacobian(dLdqd, qd)*qdd) - dLdq - Q;
+
+% Matrizes M e F (Simbólicas):
+[M_sym, RHS_sym] = equationsToMatrix(EOM, qdd);
+F_sym = RHS_sym;
+
+% EXPORTAÇÃO 1: SIMBÓLICO NÃO-LINEAR:
+exportar_latex_generico(simplify(EOM), 'EOM_Bruta.tex', 'EOM');
+exportar_latex_generico(simplify(M_sym), 'Matriz_Massa_Sym.tex', 'M(q)');
+exportar_latex_generico(simplify(F_sym), 'Vetor_Forca_Sym.tex', 'F(q, \dot{q}, u)');
+
+%% 4. LINEARIZAÇÃO SIMBÓLICA
+
+% Jacobianas de F (K, C, B)
+K_jac = -jacobian(F_sym, q);
+C_jac = -jacobian(F_sym, qd);
+B_jac = jacobian(F_sym, Fm); 
+B_pert_jac = jacobian(F_sym, [ud, ut]); 
+
+% Exportação Opcional de A e B Simbólicas (Simplificadas)
+vars_zero = [y theta h phi Dy Dtheta Dh Dphi ud ut Dud Dut];
+vals_zero = zeros(size(vars_zero));
+M_zero = subs(M_sym, vars_zero, vals_zero);
+K_zero = subs(K_jac, vars_zero, vals_zero);
+C_zero = subs(C_jac, vars_zero, vals_zero);
+B_zero = subs(B_jac, vars_zero, vals_zero);
+invM_zero = inv(M_zero);
+
+A_sym_disp = [sym(zeros(4)), sym(eye(4)); -invM_zero*K_zero, -invM_zero*C_zero];
+B_sym_disp = [sym(zeros(4,1)); invM_zero*B_zero];
+
+% Construção da Matriz de Perturbação Simbólica
+B_pert_zero = subs(B_pert_jac, vars_zero, vals_zero);
+E_sym_disp = [sym(zeros(4,2)); invM_zero*B_pert_zero]; % 4x2 porque são ud e ut
+
+% Exportação
+exportar_latex_generico(simplify(E_sym_disp), 'Matriz_E_Sym.tex', 'E');
+exportar_latex_generico(simplify(A_sym_disp), 'Matriz_A_Sym.tex', 'A');
+exportar_latex_generico(simplify(B_sym_disp), 'Matriz_B_Sym.tex', 'B');
+
+
+%% 5. ANÁLISE NUMÉRICA (CÁLCULO E EXPORTAÇÃO)
+
+% Parâmetros Numéricos:
+p.g = 9.81;
+p.Mp = 2500; p.Mc = 4400; p.MG = 400;
+p.Jc = 5000; p.JG = 100;
+p.c = 0.72; p.d = 1.08; p.b = 0.82; p.a = 0.50; p.xp = 0.50;
+p.K = 2000000; p.C = 15000;
+p.Ktorc = 1e6; p.Ctorc = 1e4;
+p.v = 2.0;
+
+% Definir velocidade de subida constante (ex: 0.5 m/s)
+v_subida = 0;
+
+% Cálculo do Ponto de Equilíbrio:
+vars_static = [Dy Dtheta Dh Dphi D2y D2theta D2h D2phi ud ut Dud Dut Mc Jc MG JG Mp g v K C Ktorc Ctorc b c d a xp];
+vals_static = [0  0      0  0    0   0       0   0     0  0  0   0   p.Mc p.Jc p.MG p.JG p.Mp p.g p.v p.K p.C p.Ktorc p.Ctorc p.b p.c p.d p.a p.xp];
+
+F_static = subs(F_sym, vars_static, vals_static);
+h_op = 1.0; 
+F_static = subs(F_static, h, h_op);
+
+eq_vars = [y, theta, phi, Fm];
+guess = [0; 0; 0; (p.MG+p.Mp)*p.g]; 
+[sol_y, sol_th, sol_phi, sol_Fm] = vpasolve(F_static == [0;0;0;0], eq_vars, guess);
+
+eq.y = double(sol_y);
+eq.th = double(sol_th);
+eq.phi = double(sol_phi);
+eq.Fm = double(sol_Fm);
+
+fprintf('   Equilíbrio: y=%.4f, theta=%.4f, phi=%.4f, Fm=%.2f\n', eq.y, eq.th, eq.phi, eq.Fm);
+
+% Substituição nas Matrizes Linearizadas:
+
+vars_lin = [y theta h phi Dy Dtheta Dh Dphi ud ut Dud Dut Fm Mc Jc MG JG Mp g v K C Ktorc Ctorc b c d a xp];
+vals_lin = [eq.y eq.th h_op eq.phi 0 0 v_subida 0 0 0 0 0 eq.Fm p.Mc p.Jc p.MG p.JG p.Mp p.g p.v p.K p.C p.Ktorc p.Ctorc p.b p.c p.d p.a p.xp];
+
+M_num = double(subs(M_sym, vars_lin, vals_lin));
+K_num = double(subs(K_jac, vars_lin, vals_lin));
+C_num = double(subs(C_jac, vars_lin, vals_lin));
+B_num_vec = double(subs(B_jac, vars_lin, vals_lin));
+Bp_num_vec = double(subs(B_pert_jac, vars_lin, vals_lin)); 
+
+invM = inv(M_num);
+A_num = [zeros(4), eye(4); 
+        -invM*K_num, -invM*C_num];
+
+B_num = [zeros(4,1); invM*B_num_vec];     
+Bp_num = [zeros(4,2); invM*Bp_num_vec];    
+
+exportar_matriz_limpa(Bp_num, 'Matriz_E_Num.tex');
+
+% Cálculo dos Polos
+polos = eig(A_num);
+disp('Polos do Sistema:');
+disp(polos);
+%% 6. CONTROLABILIDADE E BODE
+
+% Teste de Controlabilidade
+Co = ctrb(A_num, B_num);
+posto = rank(Co);
+fprintf('   Posto da Matriz de Controlabilidade: %d de 8\n', posto);
+
+% Definição dos Sistemas Lineares
+C_out = eye(8); 
+sys_motor = ss(A_num, B_num, C_out, 0);
+sys_pert_diant = ss(A_num, Bp_num(:,1), C_out, 0);
+
+%opts = bodeoptions; opts.FreqUnits = 'Hz'; opts.Grid = 'on';
+
+% Configurações de plotagem
+opts = bodeoptions; 
+opts.FreqUnits = 'Hz'; 
+opts.Grid = 'on';
+opts.Title.FontSize = 10;
+
+% --- FIGURA 1: SAÍDA h (ALTURA DA CARGA) ---
+figure('Name', 'Bode: Dinâmica da Carga (h)', 'Position', [100, 100, 600, 500]);
+% 1.1 Resposta ao Controle (Fm)
+subplot(2,1,1); 
+bode(sys_motor(3,1), opts); 
+title('Elevação (h / F_m)'); 
+grid on;
+% 1.2 Resposta à Perturbação (ud)
+subplot(2,1,2); 
+bode(sys_pert_diant(3,1), opts); 
+title('Elevação (h / u_d)'); 
+grid on;
+
+% --- FIGURA 2: SAÍDA theta (ARFAGEM/PITCH) ---
+figure('Name', 'Bode: Estabilidade de Arfagem (theta)', 'Position', [710, 100, 600, 500]);
+% 2.1 Resposta ao Controle (Fm) - Acoplamento perigoso
+subplot(2,1,1); 
+bode(sys_motor(2,1), opts); 
+title('Arfagem (\theta / F_m)'); 
+grid on;
+% 2.2 Resposta à Perturbação (ud) - Risco de tombamento
+subplot(2,1,2); 
+bode(sys_pert_diant(2,1), opts); 
+title('Arfagem (\theta / u_d)'); 
+grid on;
+
+% --- FIGURA 3: SAÍDA phi (TORÇÃO DO MASTRO) ---
+figure('Name', 'Bode: Flexibilidade do Mastro (phi)', 'Position', [100, 50, 600, 500]);
+% 3.1 Resposta ao Controle (Fm)
+subplot(2,1,1); 
+bode(sys_motor(4,1), opts); 
+title('Giro do Garfo (\phi / F_m)'); 
+grid on;
+% 3.2 Resposta à Perturbação (ud)
+subplot(2,1,2); 
+bode(sys_pert_diant(4,1), opts); 
+title('Giro do Garfo (\phi / u_d)'); 
+grid on;
+
+% --- FIGURA 4: SAÍDA y (VERTICAL CHASSI) ---
+figure('Name', 'Bode: Dinâmica Vertical do Chassi (y)', 'Position', [710, 50, 600, 500]);
+% 4.1 Resposta ao Controle (Fm) - Reação
+subplot(2,1,1); 
+bode(sys_motor(1,1), opts); 
+title('Suspensão (y / F_m)'); 
+grid on;
+% 4.2 Resposta à Perturbação (ud) - Conforto
+subplot(2,1,2); 
+bode(sys_pert_diant(1,1), opts); 
+title('Suspensão (y / u_d)'); 
+grid on;
+
+%% 7. EXPORTAÇÃO FINAL
+
+exportar_matriz_limpa(M_num, 'Matriz_Massa_Num.tex');
+exportar_matriz_limpa(K_num, 'Matriz_Rigidez_Num.tex');
+exportar_matriz_limpa(C_num, 'Matriz_Amortecimento_Num.tex');
+exportar_matriz_limpa(A_num, 'Matriz_A_Num.tex');
+exportar_matriz_limpa(B_num, 'Matriz_B_Num.tex');
+
+fid = fopen('Polos_Estabilidade.tex','w');
+fprintf(fid, '\\begin{align}\n');
+for i = 1:length(polos)
+    p_r = real(polos(i)); p_i = imag(polos(i));
+    if abs(p_i) < 1e-4, fprintf(fid, ' \\lambda_{%d} &= %.4f \\\\\n', i, p_r);
+    else, op='+'; if p_i<0, op='-'; end; fprintf(fid, ' \\lambda_{%d} &= %.4f %s %.4fi \\\\\n', i, p_r, op, abs(p_i)); end
+end
+fprintf(fid, '\\end{align}\n'); fclose(fid);
+
+%% 8. SIMULAÇÃO NO DOMÍNIO DO TEMPO (DIAGNÓSTICO COMPLETO)
+
+% Configuração:
+t_sim = 0:0.01:5; 
+C_out = eye(8);  
+sys_motor_full = ss(A_num, B_num, C_out, 0);
+sys_pert_full  = ss(A_num, Bp_num(:,1), C_out, 0); 
+
+% Índices (q = [y; theta; h; phi])
+iy = 1; ith = 2; ih = 3; iphi = 4;
+
+%% CENÁRIO A: ATUAÇÃO DO MOTOR (Levantar Carga):
+% Situação: Degrau de força de 1000 N
+u_step = 1000 * ones(size(t_sim)); 
+[Y_step, T_step] = lsim(sys_motor_full, u_step, t_sim);
+
+figure('Name', 'Simulação A: Resposta ao Motor', 'Position', [100, 100, 800, 600]);
+sgtitle('CENÁRIO A: Atuação de Controle (F_m = +1000 N)');
+
+% 1. Entrada
+subplot(5,1,1); plot(T_step, u_step, 'k', 'LineWidth', 1.5); grid on;
+ylabel('F_m [N]'); title('Entrada: Força do Motor');
+
+% 2. Altura h (O objetivo)
+subplot(5,1,2); plot(T_step, Y_step(:,ih), 'b', 'LineWidth', 1.5); grid on;
+ylabel('h [m]'); title('Saída: Altura da Carga');
+
+% 3. Arfagem theta (O perigo)
+subplot(5,1,3); plot(T_step, rad2deg(Y_step(:,ith)), 'r', 'LineWidth', 1.5); grid on;
+ylabel('\theta [graus]'); title('Acoplamento: Arfagem do Chassi');
+
+% 4. Mastro phi (A vibração)
+subplot(5,1,4); plot(T_step, rad2deg(Y_step(:,iphi)), 'm', 'LineWidth', 1.5); grid on;
+ylabel('\phi [graus]'); title('Acoplamento: Torção do Mastro');
+
+% 5. Vertical y (O afundamento)
+subplot(5,1,5); plot(T_step, Y_step(:,iy), 'g', 'LineWidth', 1.5); grid on;
+ylabel('y [m]'); title('Reação: Afundamento da Suspensão'); xlabel('Tempo [s]');
+
+
+%% --- CENÁRIO B: PERTURBAÇÃO (Lombada) ---
+% Situação: Passagem por lombada de 10cm em 0.5s
+t_lombada_inicio = 1.0;
+duracao_lombada = 0.5;
+u_lombada = zeros(size(t_sim));
+for i = 1:length(t_sim)
+    if t_sim(i) >= t_lombada_inicio && t_sim(i) <= (t_lombada_inicio + duracao_lombada)
+        u_lombada(i) = 0.10 * 0.5 * (1 - cos(2*pi*(t_sim(i)-t_lombada_inicio)/duracao_lombada));
+    end
+end
+
+[Y_lomb, T_lomb] = lsim(sys_pert_full, u_lombada, t_sim);
+
+figure('Name', 'Simulação B: Resposta à Lombada', 'Position', [950, 100, 800, 600]);
+sgtitle('CENÁRIO B: Perturbação de Solo (Lombada 10cm)');
+
+% 1. Entrada
+subplot(5,1,1); plot(T_lomb, u_lombada, 'k', 'LineWidth', 1.5); grid on;
+ylabel('u_d [m]'); title('Entrada: Perfil do Solo');
+
+% 2. Arfagem theta (A estabilidade)
+subplot(5,1,2); plot(T_lomb, rad2deg(Y_lomb(:,ith)), 'r', 'LineWidth', 1.5); grid on;
+ylabel('\theta [graus]'); title('Estabilidade: Arfagem do Chassi');
+yline(5, 'r--'); yline(-5, 'r--'); % Limites ilustrativos
+
+% 3. Mastro phi (A estrutura)
+subplot(5,1,3); plot(T_lomb, rad2deg(Y_lomb(:,iphi)), 'm', 'LineWidth', 1.5); grid on;
+ylabel('\phi [graus]'); title('Estrutura: Vibração do Mastro');
+
+% 4. Altura h (O deslocamento indesejado)
+subplot(5,1,4); plot(T_lomb, Y_lomb(:,ih), 'b', 'LineWidth', 1.5); grid on;
+ylabel('h [m]'); title('Carga: Deslocamento Vertical Induzido');
+
+% 5. Vertical y (O conforto)
+subplot(5,1,5); plot(T_lomb, Y_lomb(:,iy), 'g', 'LineWidth', 1.5); grid on;
+hold on; plot(T_lomb, u_lombada, 'k:'); hold off;
+ylabel('y [m]'); title('Conforto: Movimento do Chassi vs Solo'); xlabel('Tempo [s]');
+legend('Chassi', 'Solo');
+
+%% FUNÇÕES AUXILIARES
+function exportar_latex_generico(matriz, nome_arquivo, nome_var)
+    fid = fopen(nome_arquivo, 'w');
+    fprintf(fid, '\\begin{equation}\n\\resizebox{\\textwidth}{!}{$$\n');
+    fprintf(fid, '%s = \n%s\n', nome_var, latex(matriz));
+    fprintf(fid, '$$}\n\\end{equation}\n'); fclose(fid);
+end
+
+function exportar_matriz_limpa(matriz, nome_arquivo)
+    fid = fopen(nome_arquivo, 'w');
+    fprintf(fid, '\\begin{equation}\n');
+    [nr, nc] = size(matriz); type='bmatrix'; if nc==1, type='Bmatrix'; end
+    fprintf(fid, '\\resizebox{0.8\\textwidth}{!}{$$\n\\begin{%s}\n', type);
+    for i=1:nr, for j=1:nc, fprintf(fid, '%.2f', matriz(i,j)); if j<nc, fprintf(fid,'&'); end; end; if i<nr, fprintf(fid,'\\\\\n'); end; end
+    fprintf(fid, '\\end{%s}\n$$}\n\\end{equation}\n', type); fclose(fid);
+end
